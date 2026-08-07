@@ -28,7 +28,7 @@ LLM_MODEL = "gemma4:e4b"
 async def lifespan(app: FastAPI):
     print("=== Inițializare și Preload Modele ===")
     
-    # 1. Preload MLX Whisper (executăm o transcriere dummy pe un buffer scurt)
+    # 1. Preload MLX Whisper (transcriere dummy pe un buffer scurt)
     print(f"[1/2] Se încarcă MLX Whisper ({MLX_MODEL})...")
     try:
         import numpy as np
@@ -38,13 +38,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f" -> Avertisment la warmup MLX Whisper: {e}")
 
-    # 2. Preload Gemma în Ollama (trimitem o cerere dummy scurtă pentru a încărca modelul în VRAM)
-    print(f"[2/2] Se încarcă modelul LLM ({LLM_MODEL}) în Ollama...")
+    # 2. Preload Gemma în Ollama cu keep_alive=-1 pentru a nu fi eliminat din VRAM
+    print(f"[2/2] Se încarcă modelul LLM ({LLM_MODEL}) în VRAM...")
     try:
-        ollama.chat(model=LLM_MODEL, messages=[{"role": "user", "content": "hi"}])
-        print(" -> Modelul LLM pregătit în memorie.")
+        ollama.chat(
+            model=LLM_MODEL, 
+            messages=[{"role": "user", "content": "hi"}],
+            keep_alive=-1
+        )
+        print(" -> Modelul LLM pregătit și blocat în VRAM.")
     except Exception as e:
-        print(f" -> Eroare la incărcarea modelului Ollama ({LLM_MODEL}): {e}")
+        print(f" -> Eroare la încărcarea modelului Ollama ({LLM_MODEL}): {e}")
 
     print("=== Sistemul este pregătit pentru cereri ===")
     yield
@@ -53,7 +57,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Service Auto Audio Extractor API",
     description="API dedicat pentru transcriere cu MLX Whisper și extragere date cu Gemma.",
-    version="2.0.0",
+    version="2.1.0",
     lifespan=lifespan
 )
 
@@ -74,34 +78,35 @@ def run_transcription(file_path: str) -> str:
 
 
 def run_llm_extraction(text: str) -> Dict[str, Any]:
-    prompt = f"""Extrage din textul urmator informatii despre o programare la service auto.
-Raspunde STRICT cu un obiect JSON, fara alt text, fara ```json.
-Daca o informatie nu apare in text, pune valoarea "-" (liniuta), nu inventa date.
-
-{{"marca": "", "model": "", "an": null, "culoare": "", "motiv_vizita": "", "kilometri": "", "vin": "", "descriere_extra": ""}}
-
+    prompt = f"""Extract auto appointment data: marca, model, an, culoare, motiv_vizita, kilometri, vin, descriere_extra. Use "-" if missing.
 Text: "{text}"
 """
-    raspuns = ollama.chat(model=LLM_MODEL, messages=[{"role": "user", "content": prompt}])
-    raw_content = raspuns["message"]["content"].strip()
+    raspuns = ollama.chat(
+        model=LLM_MODEL, 
+        messages=[{"role": "user", "content": prompt}],
+        format="json",
+        options={
+            "temperature": 0.0,
+            "num_ctx": 512,       # Reduce timpul de procesare al prompt-ului (Prompt Eval Time)
+            "num_predict": 120,   # Oprește generarea imediat ce s-au scris câmpurile JSON
+            "top_k": 1,
+            "top_p": 0.1
+        },
+        keep_alive=-1
+    )
     
-    # Curățare eventuale marcaje de codeblock
-    if raw_content.startswith("```json"):
-        raw_content = raw_content[7:]
-    if raw_content.startswith("```"):
-        raw_content = raw_content[3:]
-    if raw_content.endswith("```"):
-        raw_content = raw_content[:-3]
-        
-    data = json.loads(raw_content.strip())
+    data = json.loads(raspuns["message"]["content"].strip())
     
-    # Completează valorile lipsă
-    for cheie, valoare in data.items():
-        if valoare is None or (isinstance(valoare, str) and valoare.strip() == ""):
-            data[cheie] = "-"
+    required_keys = ["marca", "model", "an", "culoare", "motiv_vizita", "kilometri", "vin", "descriere_extra"]
+    formatted_data = {}
+    for cheie in required_keys:
+        valoare = data.get(cheie)
+        if valoare is None or (isinstance(valoare, str) and valoare.strip() in ("", "null")):
+            formatted_data[cheie] = "-"
+        else:
+            formatted_data[cheie] = valoare
             
-    return data
-
+    return formatted_data
 
 # --- Endpoint 1: Audio -> Text ---
 @app.post("/transcribe", summary="1. Transcrie fișierul audio în text")
