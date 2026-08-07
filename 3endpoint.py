@@ -3,39 +3,77 @@ import os
 import tempfile
 import time
 import warnings
+from contextlib import asynccontextmanager
 from typing import Dict, Any
 
 import ollama
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from pydantic import BaseModel
-import whisper
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
+# Import direct MLX Whisper
+try:
+    import mlx_whisper
+except ImportError:
+    raise ImportError("Pachetul `mlx-whisper` este obligatoriu pentru această configurație.")
+
+# --- Configurații Fixe ---
+MLX_MODEL = "mlx-community/whisper-large-v3-turbo"
+LLM_MODEL = "gemma4:e4b"
+
+
+# --- Lifespan Event pentru Preload ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("=== Inițializare și Preload Modele ===")
+    
+    # 1. Preload MLX Whisper (executăm o transcriere dummy pe un buffer scurt)
+    print(f"[1/2] Se încarcă MLX Whisper ({MLX_MODEL})...")
+    try:
+        import numpy as np
+        dummy_audio = np.zeros(16000, dtype=np.float32) # 1 secundă de liniște
+        mlx_whisper.transcribe(dummy_audio, path_or_hf_repo=MLX_MODEL)
+        print(" -> MLX Whisper pregătit în memorie.")
+    except Exception as e:
+        print(f" -> Avertisment la warmup MLX Whisper: {e}")
+
+    # 2. Preload Gemma în Ollama (trimitem o cerere dummy scurtă pentru a încărca modelul în VRAM)
+    print(f"[2/2] Se încarcă modelul LLM ({LLM_MODEL}) în Ollama...")
+    try:
+        ollama.chat(model=LLM_MODEL, messages=[{"role": "user", "content": "hi"}])
+        print(" -> Modelul LLM pregătit în memorie.")
+    except Exception as e:
+        print(f" -> Eroare la incărcarea modelului Ollama ({LLM_MODEL}): {e}")
+
+    print("=== Sistemul este pregătit pentru cereri ===")
+    yield
+
+
 app = FastAPI(
     title="Service Auto Audio Extractor API",
-    description="API pentru transcriere audio și extragere de date structurate despre programări auto.",
-    version="1.0.0",
+    description="API dedicat pentru transcriere cu MLX Whisper și extragere date cu Gemma.",
+    version="2.0.0",
+    lifespan=lifespan
 )
-
-# Încărcăm modelul Whisper o singură dată la start pentru performanță
-whisper_model = whisper.load_model("turbo")
-DEFAULT_LLM_MODEL = "gemma4:e4b"
 
 
 # --- Schemă pentru cererea de extragere din text ---
 class TextExtractionRequest(BaseModel):
     text: str
-    llm_model: str = DEFAULT_LLM_MODEL
 
 
 # --- Funcții Helper ---
 def run_transcription(file_path: str) -> str:
-    result = whisper_model.transcribe(file_path, language="ro", fp16=False)
+    result = mlx_whisper.transcribe(
+        file_path, 
+        path_or_hf_repo=MLX_MODEL, 
+        language="ro"
+    )
     return result["text"]
 
 
-def run_llm_extraction(text: str, model_name: str) -> Dict[str, Any]:
+def run_llm_extraction(text: str) -> Dict[str, Any]:
     prompt = f"""Extrage din textul urmator informatii despre o programare la service auto.
 Raspunde STRICT cu un obiect JSON, fara alt text, fara ```json.
 Daca o informatie nu apare in text, pune valoarea "-" (liniuta), nu inventa date.
@@ -44,10 +82,10 @@ Daca o informatie nu apare in text, pune valoarea "-" (liniuta), nu inventa date
 
 Text: "{text}"
 """
-    raspuns = ollama.chat(model=model_name, messages=[{"role": "user", "content": prompt}])
+    raspuns = ollama.chat(model=LLM_MODEL, messages=[{"role": "user", "content": prompt}])
     raw_content = raspuns["message"]["content"].strip()
     
-    # Curățare eventuale marcaje de codeblock dacă LLM-ul le adaugă totuși
+    # Curățare eventuale marcaje de codeblock
     if raw_content.startswith("```json"):
         raw_content = raw_content[7:]
     if raw_content.startswith("```"):
@@ -70,7 +108,6 @@ Text: "{text}"
 async def endpoint_transcribe(file: UploadFile = File(...)):
     start_time = time.time()
     
-    # Salvăm temporar fișierul primit pe disc pentru a fi citit de Whisper
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
         content = await file.read()
         tmp.write(content)
@@ -95,7 +132,7 @@ async def endpoint_extract_info(payload: TextExtractionRequest):
     start_time = time.time()
     
     try:
-        data = run_llm_extraction(payload.text, payload.llm_model)
+        data = run_llm_extraction(payload.text)
     except json.JSONDecodeError:
         raise HTTPException(status_code=422, detail="Răspunsul generat de LLM nu a fost un JSON valid.")
     except Exception as e:
@@ -110,10 +147,7 @@ async def endpoint_extract_info(payload: TextExtractionRequest):
 
 # --- Endpoint 3: Audio -> JSON Structurat (Pipeline Complet) ---
 @app.post("/process-audio", summary="3. Pipeline complet (Audio -> Text -> JSON)")
-async def endpoint_process_audio(
-    file: UploadFile = File(...), 
-    llm_model: str = DEFAULT_LLM_MODEL
-):
+async def endpoint_process_audio(file: UploadFile = File(...)):
     total_start = time.time()
     
     # Pasul 1: Transcriere
@@ -134,7 +168,7 @@ async def endpoint_process_audio(
     # Pasul 2: Extragere JSON
     t1 = time.time()
     try:
-        data = run_llm_extraction(text, llm_model)
+        data = run_llm_extraction(text)
     except json.JSONDecodeError:
         raise HTTPException(status_code=422, detail="Răspunsul generat de LLM nu a fost un JSON valid.")
     except Exception as e:
