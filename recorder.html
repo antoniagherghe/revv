@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Recepție Service Auto — Sesiune live</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #14171a;
+    --panel: #1b1f23;
+    --panel-2: #21262b;
+    --hairline: #2a2f35;
+    --text: #f2efe9;
+    --text-muted: #8b939c;
+    --text-dim: #5b6269;
+    --accent-ready: #3fd6c0;
+    --accent-live: #ff6a3d;
+    --accent-live-dim: rgba(255, 106, 61, 0.18);
+    --accent-ready-dim: rgba(63, 214, 192, 0.16);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    background-image:
+      radial-gradient(circle at 20% 10%, rgba(63, 214, 192, 0.05), transparent 40%),
+      radial-gradient(circle at 85% 90%, rgba(255, 106, 61, 0.05), transparent 40%);
+    color: var(--text);
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 32px 20px;
+  }
+
+  .layout {
+    width: 100%;
+    max-width: 920px;
+    display: grid;
+    grid-template-columns: 300px 1fr;
+    gap: 20px;
+  }
+
+  @media (max-width: 760px) {
+    .layout { grid-template-columns: 1fr; }
+  }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--hairline);
+    border-radius: 20px;
+    padding: 32px 24px;
+  }
+
+  .eyebrow {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin: 0 0 6px;
+  }
+
+  h1 { font-size: 20px; font-weight: 500; margin: 0 0 28px; }
+
+  .stage {
+    position: relative;
+    width: 168px;
+    height: 168px;
+    margin: 0 auto 24px;
+  }
+
+  canvas#ring { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  .mic-btn {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 84px; height: 84px;
+    border-radius: 50%;
+    border: none;
+    cursor: pointer;
+    background: var(--accent-ready-dim);
+    color: var(--accent-ready);
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.25s ease, color 0.25s ease, transform 0.15s ease;
+  }
+  .mic-btn:hover { transform: translate(-50%, -50%) scale(1.04); }
+  .mic-btn:active { transform: translate(-50%, -50%) scale(0.96); }
+  .mic-btn.live { background: var(--accent-live-dim); color: var(--accent-live); }
+  .mic-btn svg { width: 32px; height: 32px; }
+
+  .status {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    color: var(--text-muted);
+    text-align: center;
+    min-height: 18px;
+  }
+  .status.live { color: var(--accent-live); }
+
+  .hint {
+    font-size: 12.5px;
+    color: var(--text-dim);
+    text-align: center;
+    line-height: 1.5;
+    margin-top: 6px;
+  }
+
+  .counter {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+    text-align: center;
+    margin-top: 18px;
+    letter-spacing: 0.04em;
+  }
+
+  .right-col { display: flex; flex-direction: column; gap: 20px; }
+
+  .profile-card { padding: 24px; }
+  .profile-title {
+    font-size: 14px; font-weight: 500;
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 16px;
+  }
+  .profile-title .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--text-dim);
+  }
+  .profile-title .dot.active { background: var(--accent-live); }
+
+  .profile-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .field {
+    background: var(--panel-2);
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    padding: 10px 12px;
+  }
+  .field.full { grid-column: 1 / -1; }
+  .field-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 3px;
+  }
+  .field-value {
+    font-size: 13.5px;
+    color: var(--text-muted);
+    word-break: break-word;
+  }
+  .field-value.filled { color: var(--text); }
+
+  .log-card { padding: 24px; flex: 1; }
+  .log-title { font-size: 14px; font-weight: 500; margin-bottom: 14px; }
+  .log-list {
+    display: flex; flex-direction: column; gap: 10px;
+    max-height: 320px; overflow-y: auto;
+  }
+  .log-empty { font-size: 13px; color: var(--text-dim); padding: 12px 0; }
+  .log-item {
+    background: var(--panel-2);
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 13px;
+    line-height: 1.5;
+    animation: fadeIn 0.3s ease;
+  }
+  .log-item .log-meta {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10.5px;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+    display: flex; justify-content: space-between;
+  }
+  .log-item .log-text { color: var(--text-muted); }
+  .log-item.empty-turn .log-text { color: var(--text-dim); font-style: italic; }
+  .log-item .log-tag { color: var(--accent-ready); }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-thumb { background: var(--hairline); border-radius: 3px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<div class="layout">
+  <div class="card">
+    <p class="eyebrow">Whispermech · Recepție</p>
+    <h1>Sesiune live</h1>
+
+    <div class="stage">
+      <canvas id="ring" width="168" height="168"></canvas>
+      <button class="mic-btn" id="micBtn" aria-label="Pornește sesiunea">
+        <svg id="micIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+          <line x1="12" y1="19" x2="12" y2="23"></line>
+          <line x1="8" y1="23" x2="16" y2="23"></line>
+        </svg>
+      </button>
+    </div>
+
+    <p class="status" id="statusText">Apasă pentru un client nou</p>
+    <p class="hint" id="hintText">Fiecare replică se trimite automat, imediat ce faci o pauză.</p>
+    <p class="counter" id="counterText"></p>
+  </div>
+
+  <div class="right-col">
+    <div class="card profile-card">
+      <div class="profile-title">
+        <span>Profil client (live)</span>
+        <span class="dot" id="profileDot"></span>
+      </div>
+      <div class="profile-grid" id="profileGrid"></div>
+    </div>
+
+    <div class="card log-card">
+      <div class="log-title">Replici procesate</div>
+      <div class="log-list" id="logList">
+        <p class="log-empty">Pornește sesiunea ca să apară replicile aici.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---------- Config ----------
+const BACKEND_URL = 'http://127.0.0.1:8000/process-audio';
+const RESET_URL = 'http://127.0.0.1:8000/reset-session';
+const FINALIZE_URL = 'http://127.0.0.1:8000/finalize-session';
+
+const SILENCE_RMS_THRESHOLD = 0.015;
+const SPEECH_RMS_THRESHOLD = 0.035;
+const SILENCE_DURATION_MS = 800;
+const MIN_SEGMENT_MS = 500;
+const MAX_SEGMENT_MS = 20000;
+
+const FIELDS = [
+  { key: 'marca', label: 'Marcă' },
+  { key: 'model', label: 'Model' },
+  { key: 'an', label: 'An' },
+  { key: 'culoare', label: 'Culoare' },
+  { key: 'motiv_vizita', label: 'Motiv vizită', full: true },
+  { key: 'kilometri', label: 'Kilometri' },
+  { key: 'vin', label: 'VIN' },
+  { key: 'descriere_extra', label: 'Descriere extra', full: true },
+];
+
+// ---------- Stare ----------
+let audioCtx, sourceNode, processorNode, analyserNode, stream;
+let sessionActive = false;
+let hasSpokenInSegment = false;
+let silenceStartedAt = null;
+let segmentStartedAt = null;
+let pcmChunks = [];
+let sampleRate = 44100;
+let segmentCount = 0;
+let profil = {};
+
+const micBtn = document.getElementById('micBtn');
+const micIcon = document.getElementById('micIcon');
+const statusText = document.getElementById('statusText');
+const hintText = document.getElementById('hintText');
+const counterText = document.getElementById('counterText');
+const ringCanvas = document.getElementById('ring');
+const ringCtx = ringCanvas.getContext('2d');
+const profileGrid = document.getElementById('profileGrid');
+const profileDot = document.getElementById('profileDot');
+const logList = document.getElementById('logList');
+
+const stopIconPath = '<rect x="6" y="6" width="12" height="12" rx="2"></rect>';
+const micIconPaths = micIcon.innerHTML;
+
+renderProfile();
+
+micBtn.addEventListener('click', () => {
+  if (!sessionActive) startSession();
+  else endSession();
+});
+
+async function startSession() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    statusText.textContent = 'Nu am acces la microfon';
+    hintText.textContent = 'Verifică permisiunile browserului pentru acest site.';
+    return;
+  }
+
+  // Reset-ul profilului pe server se intampla in fundal, NU blocheaza pornirea vizuala -
+  // primul segment oricum nu ajunge la server mai devreme de ~1.5s, timp suficient
+  fetch(RESET_URL, { method: 'POST' }).catch(() => {});
+
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  sampleRate = audioCtx.sampleRate;
+  sourceNode = audioCtx.createMediaStreamSource(stream);
+  analyserNode = audioCtx.createAnalyser();
+  analyserNode.fftSize = 1024;
+  processorNode = audioCtx.createScriptProcessor(4096, 1, 1);
+
+  sourceNode.connect(analyserNode);
+  sourceNode.connect(processorNode);
+  processorNode.connect(audioCtx.destination);
+
+  processorNode.onaudioprocess = (e) => {
+    pcmChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+  };
+
+  sessionActive = true;
+  segmentCount = 0;
+  profil = {};
+  renderProfile();
+  logList.innerHTML = '';
+
+  resetSegment();
+
+  micBtn.classList.add('live');
+  micIcon.innerHTML = stopIconPath;
+  micBtn.setAttribute('aria-label', 'Oprește sesiunea');
+  statusText.textContent = 'Sesiune activă — ascult...';
+  statusText.classList.add('live');
+  hintText.textContent = 'Apasă din nou pentru „Următorul client".';
+  profileDot.classList.add('active');
+
+  requestAnimationFrame(drawLoop);
+}
+
+async function endSession() {
+  if (!sessionActive) return;
+
+  let ultimaTrimitere = null;
+  if (hasSpokenInSegment) ultimaTrimitere = finalizeSegment();
+
+  sessionActive = false;
+  processorNode && processorNode.disconnect();
+  sourceNode && sourceNode.disconnect();
+  analyserNode && analyserNode.disconnect();
+  stream && stream.getTracks().forEach(t => t.stop());
+  audioCtx && audioCtx.close();
+
+  ringCtx.clearRect(0, 0, ringCanvas.width, ringCanvas.height);
+  micBtn.classList.remove('live');
+  micIcon.innerHTML = micIconPaths;
+  micBtn.setAttribute('aria-label', 'Pornește sesiunea');
+  statusText.classList.remove('live');
+  statusText.textContent = 'Se verifică ultimele replici...';
+  hintText.textContent = '';
+  profileDot.classList.remove('active');
+
+  if (ultimaTrimitere) await ultimaTrimitere;
+
+  try {
+    const res = await fetch(FINALIZE_URL, { method: 'POST' });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.corectat_de_gemma) {
+        profil = { ...data.extracted_data };
+        renderProfile();
+      }
+    }
+  } catch (err) {
+    // daca finalizarea esueaza, profilul ramane cel calculat pana acum
+  }
+
+  statusText.textContent = 'Sesiune încheiată';
+  hintText.textContent = 'Apasă pentru un client nou';
+  counterText.textContent = '';
+}
+
+function resetSegment() {
+  pcmChunks = [];
+  hasSpokenInSegment = false;
+  silenceStartedAt = null;
+  segmentStartedAt = performance.now();
+}
+
+function computeRMS(analyser) {
+  const data = new Float32Array(analyser.fftSize);
+  analyser.getFloatTimeDomainData(data);
+  let sum = 0;
+  for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+  return Math.sqrt(sum / data.length);
+}
+
+function drawLoop() {
+  if (!sessionActive) return;
+
+  const rms = computeRMS(analyserNode);
+  const now = performance.now();
+  const elapsedInSegment = now - segmentStartedAt;
+
+  if (rms > SPEECH_RMS_THRESHOLD) hasSpokenInSegment = true;
+
+  let silenceRatio = 0;
+  if (hasSpokenInSegment && elapsedInSegment > MIN_SEGMENT_MS) {
+    if (rms < SILENCE_RMS_THRESHOLD) {
+      if (silenceStartedAt === null) silenceStartedAt = now;
+      const silenceElapsed = now - silenceStartedAt;
+      silenceRatio = Math.min(silenceElapsed / SILENCE_DURATION_MS, 1);
+      if (silenceElapsed >= SILENCE_DURATION_MS) {
+        finalizeSegment();
+        resetSegment();
+      }
+    } else {
+      silenceStartedAt = null;
+    }
+  }
+
+  if (hasSpokenInSegment && elapsedInSegment >= MAX_SEGMENT_MS) {
+    finalizeSegment();
+    resetSegment();
+  }
+
+  drawRing(rms, silenceRatio);
+  counterText.textContent = `replici trimise: ${segmentCount}`;
+  requestAnimationFrame(drawLoop);
+}
+
+function drawRing(rms, silenceRatio) {
+  const w = ringCanvas.width, h = ringCanvas.height;
+  const cx = w / 2, cy = h / 2;
+  ringCtx.clearRect(0, 0, w, h);
+
+  ringCtx.beginPath();
+  ringCtx.arc(cx, cy, 78, 0, Math.PI * 2);
+  ringCtx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ringCtx.lineWidth = 2;
+  ringCtx.stroke();
+
+  const level = Math.min(rms * 9, 1);
+  const pulseRadius = 46 + level * 18;
+  ringCtx.beginPath();
+  ringCtx.arc(cx, cy, pulseRadius, 0, Math.PI * 2);
+  ringCtx.strokeStyle = silenceRatio > 0 ? 'rgba(255,106,61,0.35)' : 'rgba(63,214,192,0.35)';
+  ringCtx.lineWidth = 2;
+  ringCtx.stroke();
+
+  if (silenceRatio > 0) {
+    ringCtx.beginPath();
+    ringCtx.arc(cx, cy, 78, -Math.PI / 2, -Math.PI / 2 + silenceRatio * Math.PI * 2);
+    ringCtx.strokeStyle = '#ff6a3d';
+    ringCtx.lineWidth = 3;
+    ringCtx.lineCap = 'round';
+    ringCtx.stroke();
+  }
+}
+
+function finalizeSegment() {
+  if (!hasSpokenInSegment || pcmChunks.length === 0) return null;
+
+  const blob = encodeWav(pcmChunks, sampleRate);
+  segmentCount += 1;
+  const idIntern = segmentCount;
+
+  addLogPlaceholder(idIntern);
+  return sendToBackend(blob, idIntern);
+}
+
+async function sendToBackend(blob, idIntern) {
+  const formData = new FormData();
+  formData.append('file', blob, `segment_${idIntern}.wav`);
+
+  try {
+    const res = await fetch(BACKEND_URL, { method: 'POST', body: formData });
+    if (!res.ok) throw new Error(`Server a răspuns cu status ${res.status}`);
+    const data = await res.json();
+
+    updateLogEntry(idIntern, data.transcription_text || '', true, data.durations, data.corectat_de_gemma);
+
+    if (data.extracted_data) {
+      mergeProfil(data.extracted_data);
+      renderProfile();
+    }
+  } catch (err) {
+    updateLogEntry(idIntern, `Eroare la procesare: ${err.message}`, false);
+  }
+}
+
+function mergeProfil(nou) {
+  for (const cheie of Object.keys(nou)) {
+    const valoare = nou[cheie];
+    if (valoare && valoare !== '-' && String(valoare).trim() !== '') {
+      profil[cheie] = valoare;
+    }
+  }
+}
+
+function encodeWav(chunks, sr) {
+  let totalLength = 0;
+  for (const c of chunks) totalLength += c.length;
+
+  const pcm16 = new Int16Array(totalLength);
+  let offset = 0;
+  for (const c of chunks) {
+    for (let i = 0; i < c.length; i++) {
+      const s = Math.max(-1, Math.min(1, c[i]));
+      pcm16[offset++] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+  }
+
+  const buffer = new ArrayBuffer(44 + pcm16.length * 2);
+  const view = new DataView(buffer);
+
+  writeString(view, 0, 'RIFF');
+  view.setUint32(4, 36 + pcm16.length * 2, true);
+  writeString(view, 8, 'WAVE');
+  writeString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sr, true);
+  view.setUint32(28, sr * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeString(view, 36, 'data');
+  view.setUint32(40, pcm16.length * 2, true);
+
+  let o = 44;
+  for (let i = 0; i < pcm16.length; i++, o += 2) view.setInt16(o, pcm16[i], true);
+
+  return new Blob([view], { type: 'audio/wav' });
+}
+
+function writeString(view, offset, str) {
+  for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+}
+
+function addLogPlaceholder(id) {
+  const empty = logList.querySelector('.log-empty');
+  if (empty) empty.remove();
+
+  const item = document.createElement('div');
+  item.className = 'log-item';
+  item.id = `log-${id}`;
+  item.innerHTML = `
+    <div class="log-meta"><span class="log-tag">replica ${id}</span><span>se procesează...</span></div>
+    <div class="log-text">···</div>
+  `;
+  logList.prepend(item);
+}
+
+function updateLogEntry(id, text, ok, durations, corectatDeGemma) {
+  const item = document.getElementById(`log-${id}`);
+  if (!item) return;
+  const eGol = !text || text.trim() === '';
+  item.classList.toggle('empty-turn', eGol);
+
+  let timpText = '';
+  if (durations) {
+    timpText = `transcriere ${durations.transcription_seconds}s`;
+    if (corectatDeGemma) timpText += ` · gemma ${durations.gemma_seconds}s`;
+  }
+
+  item.innerHTML = `
+    <div class="log-meta"><span class="log-tag">replica ${id}</span><span>${ok ? 'trimis' : 'eroare'}</span></div>
+    <div class="log-text">${eGol ? '(fara continut relevant)' : escapeHtml(text)}</div>
+    ${timpText ? `<div class="log-meta" style="margin-top:6px;margin-bottom:0;"><span>${timpText}</span></div>` : ''}
+  `;
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function renderProfile() {
+  profileGrid.innerHTML = FIELDS.map(f => {
+    const valoare = profil[f.key];
+    const are = valoare !== undefined;
+    return `
+      <div class="field ${f.full ? 'full' : ''}">
+        <div class="field-label">${f.label}</div>
+        <div class="field-value ${are ? 'filled' : ''}">${are ? escapeHtml(String(valoare)) : '-'}</div>
+      </div>
+    `;
+  }).join('');
+}
+</script>
+</body>
+</html>
