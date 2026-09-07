@@ -56,6 +56,7 @@ CAMPURI_VALIDATE_STRICT = ["marca", "model", "culoare", "vin"]
 profil_curent: Dict[str, Any] = dict(PROFIL_GOL)
 conversatie_completa: List[str] = []
 contor_replici: int = 0
+ultima_replica_acoperita: int = 0  # cate replici din conversatie_completa au fost deja procesate de Gemma
 
 # --- Stare model Whisper (incarcat o singura data la pornire) ---
 whisper_model = None
@@ -240,6 +241,15 @@ async def call_gemma_correction(full_text: str) -> Dict[str, Any]:
         "Mentenanta', 'Revizie generala') decat daca clientul a folosit chiar acei termeni. "
         "Daca clientul descrie problema confuz sau nu stie exact ce are, scrie EXACT ce a "
         "spus, cuvant cu cuvant - nu interpreta si nu rezuma.\n"
+        "CORECTARE GRAMATICALĂ: textul provine dintr-o transcriere audio automată, care poate "
+        "conține greșeli de recunoaștere vocală - cuvinte trunchiate, forme gramaticale greșite "
+        "sau diacritice lipsă (ex: 'scas' în loc de 'scăzut', 'servis' în loc de 'service'). "
+        "Corectează aceste greșeli EVIDENTE de transcriere/gramatică atunci când apar, dar STRICT "
+        "la nivel de ortografie și formă a cuvântului - NU schimba sensul, NU înlocui cu un "
+        "sinonim diferit și NU generaliza/categorisi (regula de mai sus, de a păstra cuvintele "
+        "exacte ale clientului la 'motiv_vizita', rămâne valabilă - doar corectează gramatical "
+        "acele cuvinte, nu le înlocui cu altele). Dacă nu ești sigur ce a vrut să spună clientul, "
+        "las-o neschimbată, așa cum a fost transcrisă.\n"
         "Dacă clientul răspunde negativ sau nu știe ('nu', 'nu stiu', 'nu am', 'habar n-am') la o "
         "întrebare despre un câmp anume, folosește '-' pentru acel câmp - NU scrie cuvântul negativ ca valoare.\n"
         "Returnează STRICT un obiect JSON valid, fără marcaje markdown sau texte adiționale, exact în "
@@ -311,7 +321,7 @@ async def endpoint_extract_info(payload: TextExtractionRequest):
 
 @app.post("/process-audio", summary="3. Pipeline complet (Audio -> Text -> Profil live)")
 async def endpoint_process_audio(file: UploadFile = File(...)):
-    global profil_curent, conversatie_completa, contor_replici
+    global profil_curent, conversatie_completa, contor_replici, ultima_replica_acoperita
 
     total_start = time.time()
 
@@ -335,10 +345,12 @@ async def endpoint_process_audio(file: UploadFile = File(...)):
 
     corectat_de_gemma = False
     gemma_time = 0.0
-    if contor_replici % CORECTIE_LA_FIECARE == 0 and conversatie_completa:
+    replici_neacoperite = len(conversatie_completa) - ultima_replica_acoperita
+    if replici_neacoperite >= CORECTIE_LA_FIECARE and conversatie_completa:
         t1 = time.time()
         text_complet = " ".join(conversatie_completa)
         profil_curent = actualizeaza_profil_sigur(profil_curent, await call_gemma_correction(text_complet))
+        ultima_replica_acoperita = len(conversatie_completa)
         corectat_de_gemma = True
         gemma_time = round(time.time() - t1, 2)
 
@@ -357,16 +369,17 @@ async def endpoint_process_audio(file: UploadFile = File(...)):
 
 @app.post("/reset-session", summary="Reseteaza profilul si contorul pentru un client nou")
 async def endpoint_reset_session():
-    global profil_curent, conversatie_completa, contor_replici
+    global profil_curent, conversatie_completa, contor_replici, ultima_replica_acoperita
     profil_curent = dict(PROFIL_GOL)
     conversatie_completa = []
     contor_replici = 0
+    ultima_replica_acoperita = 0
     return {"status": "reset"}
 
 
 @app.post("/finalize-session", summary="Ruleaza Gemma pe replicile ramase neacoperite, la final de sesiune")
 async def endpoint_finalize_session():
-    global profil_curent, conversatie_completa, contor_replici
+    global profil_curent, conversatie_completa, contor_replici, ultima_replica_acoperita
 
     if contor_replici == 0 or not conversatie_completa:
         return {
@@ -376,7 +389,9 @@ async def endpoint_finalize_session():
             "gemma_seconds": 0.0,
         }
 
-    if contor_replici % CORECTIE_LA_FIECARE == 0:
+    replici_neacoperite = len(conversatie_completa) - ultima_replica_acoperita
+
+    if replici_neacoperite <= 0:
         if not profil_e_gol(profil_curent):
             await run_in_threadpool(exporta_in_notes, profil_curent)
         return {
@@ -389,9 +404,8 @@ async def endpoint_finalize_session():
     start = time.time()
     text_complet = " ".join(conversatie_completa)
     profil_curent = actualizeaza_profil_sigur(profil_curent, await call_gemma_correction(text_complet))
+    ultima_replica_acoperita = len(conversatie_completa)
     duration = round(time.time() - start, 2)
-
-    replici_neacoperite = contor_replici % CORECTIE_LA_FIECARE
 
     if not profil_e_gol(profil_curent):
         exportat_in_notes = await run_in_threadpool(exporta_in_notes, profil_curent)
