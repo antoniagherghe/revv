@@ -40,6 +40,7 @@ recorder.html  →  FastAPI (merge13.py)  →  Whisper (speech-to-text)
 ```bash
 pip install -r requirements.txt
 ollama pull gemma4:e4b
+cp .env.example .env        # then add your Google Form ID (optional)
 uvicorn merge13:app --host 127.0.0.1 --port 8000
 ```
 Then open `recorder.html` in the browser.

@@ -228,7 +228,8 @@ def exporta_in_notes(profil: Dict[str, Any]) -> bool:
         return False
 
 
-GOOGLE_FORM_ID = "1FAIpQLSeVBTKp_p4cTxzXXlEKoeRY3GLd2qnfX1awGUKSaDKSvn7hmw"
+# ID-ul formularului se citeste din fisierul .env (vezi .env.example), nu se mai tine in cod.
+GOOGLE_FORM_ID = os.environ.get("GOOGLE_FORM_ID", "")
 GOOGLE_FORM_VIEWFORM_URL = f"https://docs.google.com/forms/d/e/{GOOGLE_FORM_ID}/viewform"
 GOOGLE_FORM_RESPONSE_URL = f"https://docs.google.com/forms/d/e/{GOOGLE_FORM_ID}/formResponse"
 
