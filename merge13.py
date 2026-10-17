@@ -4,6 +4,7 @@ load_dotenv()
 import json
 import os
 import re
+import requests
 import subprocess
 import tempfile
 import time
@@ -56,6 +57,7 @@ CAMPURI_VALIDATE_STRICT = ["marca", "model", "culoare", "vin"]
 profil_curent: Dict[str, Any] = dict(PROFIL_GOL)
 conversatie_completa: List[str] = []
 contor_replici: int = 0
+ultima_replica_acoperita: int = 0  # cate replici din conversatie_completa au fost deja procesate de Gemma
 
 # --- Stare model Whisper (incarcat o singura data la pornire) ---
 whisper_model = None
@@ -226,6 +228,93 @@ def exporta_in_notes(profil: Dict[str, Any]) -> bool:
         return False
 
 
+GOOGLE_FORM_ID = "1FAIpQLSeVBTKp_p4cTxzXXlEKoeRY3GLd2qnfX1awGUKSaDKSvn7hmw"
+GOOGLE_FORM_VIEWFORM_URL = f"https://docs.google.com/forms/d/e/{GOOGLE_FORM_ID}/viewform"
+GOOGLE_FORM_RESPONSE_URL = f"https://docs.google.com/forms/d/e/{GOOGLE_FORM_ID}/formResponse"
+
+# Maparea camp-din-profil -> eticheta EXACTA a intrebarii asa cum apare in Google Form.
+CAMPURI_FORMULAR_GOOGLE = {
+    "model": "Model",
+    "culoare": "Culoare",
+    "motiv_vizita": "Motiv vizita",
+}
+
+# Plasa de siguranta: daca auto-detectarea ID-urilor (mai jos) esueaza vreodata pentru ca
+# Google isi schimba structura interna a paginii, se pot pune aici manual cele 3 ID-uri
+# obtinute din Google Forms -> meniul cu 3 puncte -> "Get pre-filled link" -> completezi
+# fiecare camp cu o valoare de test -> "Get link" -> copiezi numerele de dupa "entry." din URL.
+# Exemplu: {"model": "123456789", "culoare": "987654321", "motiv_vizita": "555555555"}
+ENTRY_ID_OVERRIDE: Dict[str, str] = {}
+
+_entry_id_cache: Dict[str, str] = None
+
+
+def _obtine_entry_ids_formular() -> Dict[str, str]:
+    """Detecteaza automat ID-urile interne (entry.XXXXX) ale celor 3 intrebari din Google Form,
+    citind structura publica a paginii formularului. Rezultatul e cache-uit dupa prima rulare
+    reusita, ca sa nu se refaca cererea HTTP la fiecare submisie."""
+    global _entry_id_cache
+    if _entry_id_cache:
+        return _entry_id_cache
+
+    if ENTRY_ID_OVERRIDE:
+        _entry_id_cache = dict(ENTRY_ID_OVERRIDE)
+        return _entry_id_cache
+
+    try:
+        raspuns = requests.get(GOOGLE_FORM_VIEWFORM_URL, timeout=10)
+        raspuns.raise_for_status()
+        match = re.search(r"FB_PUBLIC_LOAD_DATA_\s*=\s*(\[.*?\]);", raspuns.text, re.DOTALL)
+        if not match:
+            raise ValueError("Nu am gasit structura FB_PUBLIC_LOAD_DATA_ in pagina formularului.")
+        structura = json.loads(match.group(1))
+        intrebari = structura[1][1]
+
+        gasite: Dict[str, str] = {}
+        for intrebare in intrebari:
+            titlu = (intrebare[1] or "").strip()
+            for camp, eticheta in CAMPURI_FORMULAR_GOOGLE.items():
+                if titlu.lower() == eticheta.lower():
+                    entry_id = str(intrebare[4][0][0])
+                    gasite[camp] = entry_id
+
+        lipsa = [c for c in CAMPURI_FORMULAR_GOOGLE if c not in gasite]
+        if lipsa:
+            raise ValueError(f"Nu am gasit ID-uri pentru campurile: {lipsa}.")
+
+        _entry_id_cache = gasite
+        return gasite
+    except Exception as e:
+        print(f" -> EROARE la detectarea automata a campurilor din Google Form: {e}")
+        print("    -> Foloseste 'Get pre-filled link' din Google Forms si completeaza ENTRY_ID_OVERRIDE manual.")
+        return {}
+
+
+def trimite_in_google_form(profil: Dict[str, Any]) -> bool:
+    """Trimite automat cele 3 campuri relevante (model, culoare, motiv_vizita) catre Google Form,
+    printr-un simplu request HTTP catre endpoint-ul de raspunsuri al formularului - fara sa
+    deschida vreun browser, la fel de discret ca exportul in Notes."""
+    entry_ids = _obtine_entry_ids_formular()
+    if not entry_ids:
+        return False
+
+    payload = {}
+    for camp, entry_id in entry_ids.items():
+        valoare = profil.get(camp, "-")
+        payload[f"entry.{entry_id}"] = "" if valoare == "-" else valoare
+
+    try:
+        raspuns = requests.post(GOOGLE_FORM_RESPONSE_URL, data=payload, timeout=10)
+        if raspuns.status_code in (200, 302):
+            print(" -> Profil trimis cu succes in Google Form.")
+            return True
+        print(f" -> EROARE: Google Form a raspuns cu status {raspuns.status_code}.")
+        return False
+    except Exception as e:
+        print(f" -> EROARE la trimiterea in Google Form: {e}")
+        return False
+
+
 async def call_gemma_correction(full_text: str) -> Dict[str, Any]:
     system_prompt = (
         "Ești un asistent de service auto. Analizează întreaga conversație de mai jos și "
@@ -240,6 +329,15 @@ async def call_gemma_correction(full_text: str) -> Dict[str, Any]:
         "Mentenanta', 'Revizie generala') decat daca clientul a folosit chiar acei termeni. "
         "Daca clientul descrie problema confuz sau nu stie exact ce are, scrie EXACT ce a "
         "spus, cuvant cu cuvant - nu interpreta si nu rezuma.\n"
+        "CORECTARE GRAMATICALĂ: textul provine dintr-o transcriere audio automată, care poate "
+        "conține greșeli de recunoaștere vocală - cuvinte trunchiate, forme gramaticale greșite "
+        "sau diacritice lipsă (ex: 'scas' în loc de 'scăzut', 'servis' în loc de 'service'). "
+        "Corectează aceste greșeli EVIDENTE de transcriere/gramatică atunci când apar, dar STRICT "
+        "la nivel de ortografie și formă a cuvântului - NU schimba sensul, NU înlocui cu un "
+        "sinonim diferit și NU generaliza/categorisi (regula de mai sus, de a păstra cuvintele "
+        "exacte ale clientului la 'motiv_vizita', rămâne valabilă - doar corectează gramatical "
+        "acele cuvinte, nu le înlocui cu altele). Dacă nu ești sigur ce a vrut să spună clientul, "
+        "las-o neschimbată, așa cum a fost transcrisă.\n"
         "Dacă clientul răspunde negativ sau nu știe ('nu', 'nu stiu', 'nu am', 'habar n-am') la o "
         "întrebare despre un câmp anume, folosește '-' pentru acel câmp - NU scrie cuvântul negativ ca valoare.\n"
         "Returnează STRICT un obiect JSON valid, fără marcaje markdown sau texte adiționale, exact în "
@@ -311,7 +409,7 @@ async def endpoint_extract_info(payload: TextExtractionRequest):
 
 @app.post("/process-audio", summary="3. Pipeline complet (Audio -> Text -> Profil live)")
 async def endpoint_process_audio(file: UploadFile = File(...)):
-    global profil_curent, conversatie_completa, contor_replici
+    global profil_curent, conversatie_completa, contor_replici, ultima_replica_acoperita
 
     total_start = time.time()
 
@@ -335,10 +433,12 @@ async def endpoint_process_audio(file: UploadFile = File(...)):
 
     corectat_de_gemma = False
     gemma_time = 0.0
-    if contor_replici % CORECTIE_LA_FIECARE == 0 and conversatie_completa:
+    replici_neacoperite = len(conversatie_completa) - ultima_replica_acoperita
+    if replici_neacoperite >= CORECTIE_LA_FIECARE and conversatie_completa:
         t1 = time.time()
         text_complet = " ".join(conversatie_completa)
         profil_curent = actualizeaza_profil_sigur(profil_curent, await call_gemma_correction(text_complet))
+        ultima_replica_acoperita = len(conversatie_completa)
         corectat_de_gemma = True
         gemma_time = round(time.time() - t1, 2)
 
@@ -357,16 +457,17 @@ async def endpoint_process_audio(file: UploadFile = File(...)):
 
 @app.post("/reset-session", summary="Reseteaza profilul si contorul pentru un client nou")
 async def endpoint_reset_session():
-    global profil_curent, conversatie_completa, contor_replici
+    global profil_curent, conversatie_completa, contor_replici, ultima_replica_acoperita
     profil_curent = dict(PROFIL_GOL)
     conversatie_completa = []
     contor_replici = 0
+    ultima_replica_acoperita = 0
     return {"status": "reset"}
 
 
 @app.post("/finalize-session", summary="Ruleaza Gemma pe replicile ramase neacoperite, la final de sesiune")
 async def endpoint_finalize_session():
-    global profil_curent, conversatie_completa, contor_replici
+    global profil_curent, conversatie_completa, contor_replici, ultima_replica_acoperita
 
     if contor_replici == 0 or not conversatie_completa:
         return {
@@ -376,34 +477,35 @@ async def endpoint_finalize_session():
             "gemma_seconds": 0.0,
         }
 
-    if contor_replici % CORECTIE_LA_FIECARE == 0:
-        if not profil_e_gol(profil_curent):
-            await run_in_threadpool(exporta_in_notes, profil_curent)
+    replici_neacoperite = len(conversatie_completa) - ultima_replica_acoperita
+
+    if replici_neacoperite <= 0:
+        trimis_in_google_form = await run_in_threadpool(trimite_in_google_form, profil_curent)
         return {
             "extracted_data": profil_curent,
             "corectat_de_gemma": False,
             "motiv": "deja acoperit de ultima trecere Gemma",
             "gemma_seconds": 0.0,
+            "trimis_in_google_form": trimis_in_google_form,
         }
 
     start = time.time()
     text_complet = " ".join(conversatie_completa)
     profil_curent = actualizeaza_profil_sigur(profil_curent, await call_gemma_correction(text_complet))
+    ultima_replica_acoperita = len(conversatie_completa)
     duration = round(time.time() - start, 2)
 
-    replici_neacoperite = contor_replici % CORECTIE_LA_FIECARE
-
     if not profil_e_gol(profil_curent):
-        exportat_in_notes = await run_in_threadpool(exporta_in_notes, profil_curent)
+        trimis_in_google_form = await run_in_threadpool(trimite_in_google_form, profil_curent)
     else:
-        exportat_in_notes = False
+        trimis_in_google_form = False
 
     return {
         "extracted_data": profil_curent,
         "corectat_de_gemma": True,
         "replici_verificate_suplimentar": replici_neacoperite,
         "gemma_seconds": duration,
-        "exportat_in_notes": exportat_in_notes,
+        "trimis_in_google_form": trimis_in_google_form,
     }
 
 
@@ -411,3 +513,9 @@ async def endpoint_finalize_session():
 async def endpoint_export_notes(payload: Dict[str, Any]):
     succes = await run_in_threadpool(exporta_in_notes, payload)
     return {"exportat_in_notes": succes}
+
+
+@app.post("/export-google-form", summary="Test izolat: trimite un profil (JSON) direct in Google Form")
+async def endpoint_export_google_form(payload: Dict[str, Any]):
+    succes = await run_in_threadpool(trimite_in_google_form, payload)
+    return {"trimis_in_google_form": succes}
