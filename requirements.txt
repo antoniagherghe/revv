@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-multipart
+pydantic
+ollama
+openai-whisper
+torch
+numpy
+requests
+python-dotenv
